@@ -1551,9 +1551,12 @@ ul.chat-body .chat-line[data-nonce].has-ping.-scrolled-to {
 
 .popup.panels .pane {
     display: inline-block;
-    width: 100%;
     height: 100%;
     vertical-align: top;
+}
+
+.popup.panels .pane.pane-full {
+    width: 100%;
 }
 
 .popup.panels header:first-of-type {
