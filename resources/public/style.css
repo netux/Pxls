@@ -1478,7 +1478,6 @@ ul.chat-body .chat-line[data-nonce].has-ping.-scrolled-to {
 
 .popup .pings-list li {
     font-family: monospace;
-    white-space: pre;
 }
 
 @keyframes rainbow-name {
@@ -1534,7 +1533,8 @@ ul.chat-body .chat-line[data-nonce].has-ping.-scrolled-to {
 }
 
 .popup.panels {
-    width: 400px;
+    width: 98%;
+    min-width: 300px;
     max-height:99vh;
     max-width: 400px;
     min-height: 200px;
