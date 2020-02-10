@@ -131,7 +131,8 @@ public class PacketHandler {
     private void handleAdminMessage(WebSocketChannel channel, User user, ClientAdminMessage obj) {
         User u = App.getUserManager().getByName(obj.getUsername());
         if (u != null) {
-            ServerAlert msg = new ServerAlert(escapeHtml4(obj.getMessage()));
+            ServerAlert msg = new ServerAlert(user.getName(), escapeHtml4(obj.getMessage()));
+            App.getDatabase().insertAdminLog(user.getId(), String.format("Sent an alert to %s (UID: %d) with the content: %s", u.getName(), u.getId(), escapeHtml4(obj.getMessage())));
             for (WebSocketChannel ch : u.getConnections()) {
                 server.send(ch, msg);
             }
@@ -405,7 +406,7 @@ public class PacketHandler {
             String nonce = App.getDatabase().createChatMessage(0, nowMS / 1000L, message, "");
             server.broadcast(new ServerChatMessage(new ChatMessage(nonce, "CONSOLE", nowMS / 1000L, message, null, null, 0)));
         } else {
-            if (user.isChatbanned()) return;
+            if (!user.canChat()) return;
             if (message.trim().length() == 0) return;
             if (user.isRenameRequested(false)) return;
             int remaining = RateLimitFactory.getTimeRemaining(DBChatMessage.class, String.valueOf(user.getId()));

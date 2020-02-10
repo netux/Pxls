@@ -164,7 +164,8 @@ public class App {
                 }
             } else if (token[0].equalsIgnoreCase("alert")) {
                 String rest = line.substring(token[0].length() + 1).trim();
-                server.broadcast(new ServerAlert(rest));
+                App.getDatabase().insertServerAdminLog(String.format("Sent a server-wide broadcast with the content: %s", rest));
+                server.broadcast(new ServerAlert("console", rest));
             } else if (token[0].equalsIgnoreCase("ban")) {
                 if (token.length < 3) {
                     System.out.println("Missing reason");
@@ -411,7 +412,7 @@ public class App {
                         toRename.setRenameRequested(false);
                         if (toRename.updateUsername(token[2], true)) {
                             App.getServer().send(toRename, new ServerRenameSuccess(toRename.getName()));
-                            System.out.println("Name udpated");
+                            System.out.println("Name updated");
                         } else {
                             System.out.println("Failed to update name (function returned false. name taken or an error occurred)");
                         }
@@ -478,6 +479,10 @@ public class App {
         userIdleTimeout = App.getConfig().getDuration("userIdleTimeout", TimeUnit.MILLISECONDS);
 
         ChatFilter.getInstance().reload();
+
+        if (server != null) {
+            server.getWebHandler().reloadServicesEnabledState();
+        }
 
         try {
             Files.deleteIfExists(getStorageDir().resolve("index_cache.html"));
