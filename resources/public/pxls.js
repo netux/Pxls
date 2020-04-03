@@ -169,13 +169,16 @@ window.App = (function () {
          * @param dbType {string} The type of the database, acts internally as a map key.
          * @param [keepTrigger=false] {boolean} Whether or not this trigger type should keep it's matching trigger chars on search results.
          * @param [hasPair=false] {boolean} Whether or not this trigger has a matching pair at the end, e.g. ':word:' vs '@word'
+         * @param [minLength=0] {number} The minimum length of the match before this trigger is considered valid.
+         *                                Length is calculated without `this.char`, so a trigger of ":" and a match of ":one" will be a length of 3.
          * @constructor
          */
-        function Trigger(char, dbType, keepTrigger = false, hasPair = false) {
+        function Trigger(char, dbType, keepTrigger = false, hasPair = false, minLength = 0) {
             this.char = char;
             this.dbType = dbType;
             this.keepTrigger = keepTrigger;
             this.hasPair = hasPair;
+            this.minLength = minLength;
         }
 
         /**
@@ -198,17 +201,23 @@ window.App = (function () {
          * @param name {string} The name of the database. Used internally as an accessor key.
          * @param [initData={}] {object} The initial data to seed this database with.
          * @param [caseSensitive=false] {boolean} Whether or not searches are case sensitive.
+         * @param [leftAnchored=false] {boolean} Whether or not searches are left-anchored.
+         *                                       If true, `startsWith` is used. Otherwise, `includes` is used.
          * @constructor
          */
-        function Database(name, initData = {}, caseSensitive = false) {
+        function Database(name, initData = {}, caseSensitive = false, leftAnchored = false) {
             this.name = name;
             this._caseSensitive = caseSensitive;
             this.initData = initData;
+            this.leftAnchored = leftAnchored;
 
             const fixKey = key => this._caseSensitive ? key.trim() : key.toLowerCase().trim();
-            this.search = start => {
+            this.search = (start) => {
                 start = fixKey(start);
-                return Object.entries(this.initData).filter(x => fixKey(x[0]).startsWith(start)).map(x => x[1]);
+                return Object.entries(this.initData).filter(x => {
+                    let key = fixKey(x[0]);
+                    return this.leftAnchored ? key.startsWith(start) : key.includes(start);
+                }).map(x => x[1]);
             };
             this.addEntry = (key, value) => {
                 key = fixKey(key);
@@ -280,7 +289,7 @@ window.App = (function () {
                     match.word = searchString.substring(match.start+1, fixedEnd);
                 }
 
-                return matched ? match : false;
+                return matched ? (match.word.length >= match.trigger.minLength ? match : false) : false;
             };
 
             /**
@@ -290,7 +299,7 @@ window.App = (function () {
                 let db = this.DBs.filter(x => x.name === trigger.trigger.dbType);
                 if (!db || !db.length) return [];
                 db = db[0];
-                let fromDB = db.search(trigger.word);
+                let fromDB = db.search(trigger.word, trigger.trigger.leftAnchored);
                 if (fromDB && trigger.trigger.keepTrigger) {
                     fromDB = fromDB.map(x => `${trigger.trigger.char}${x}`);
                 }
@@ -747,14 +756,15 @@ window.App = (function () {
                         lookup.runLookup(args.x, args.y);
                     }
                 },
+                webInfo: false,
                 updateViewport: function (data) {
                     if (!isNaN(data.scale)) self.scale = parseFloat(data.scale);
                     self.centerOn(data.x, data.y);
                 },
-                centerOn: function (x, y) {
+                centerOn: function (x, y, ignoreLock=false) {
                     if (x != null) self.pan.x = (self.width / 2 - x);
                     if (y != null) self.pan.y = (self.height / 2 - y);
-                    self.update();
+                    self.update(null, ignoreLock);
                 },
                 replayBuffer: function () {
                     $.map(self.pixelBuffer, function (p) {
@@ -852,18 +862,23 @@ window.App = (function () {
                             case 76:            // L
                             case "l":
                             case "L":
-                                self.allowDrag = !self.allowDrag;
-                                if (self.allowDrag) coords.lockIcon.fadeOut(200);
-                                else coords.lockIcon.fadeIn(200);
+                                board.setAllowDrag(!self.allowDrag);
+                                $('#lockCanvasToggle').prop('checked', !self.allowDrag);
                                 break;
                             case "KeyR":
                             case 82:            // R
                             case "r":
                             case "R":
-                                var tempOpts = template.getOptions();
-                                var tempElem = $("#board-template");
+                                if (!self.allowDrag) {
+                                    break;
+                                }
+
+                                const tempOpts = template.getOptions();
                                 if (tempOpts.use) {
-                                  board.centerOn(tempOpts.x + (tempElem.width() / 2), tempOpts.y + (tempElem.height() / 2));
+                                    const tempElem = $("#board-template");
+                                    self.centerOn(tempOpts.x + (tempElem.width() / 2), tempOpts.y + (tempElem.height() / 2));
+                                } else if (place.lastPixel) {
+                                    self.centerOn(place.lastPixel.x, place.lastPixel.y);
                                 }
                                 break;
                             case "KeyJ":
@@ -1113,6 +1128,7 @@ window.App = (function () {
                         uiHelper.setMax(data.maxStacked);
                         chat.webinit(data);
                         chromeOffsetWorkaround.update();
+                        self.webInfo = data;
                         if (data.captchaKey) {
                             $(".g-recaptcha").attr("data-sitekey", data.captchaKey);
 
@@ -1126,7 +1142,7 @@ window.App = (function () {
                         var cx = query.get("x") || self.width / 2,
                             cy = query.get("y") || self.height / 2;
                         self.scale = query.get("scale") || self.scale;
-                        self.centerOn(cx, cy);
+                        self.centerOn(cx, cy, true);
                         socket.init();
                         binary_ajax("/boarddata" + "?_" + (new Date()).getTime(), self.draw, socket.reconnect);
 
@@ -1178,7 +1194,7 @@ window.App = (function () {
                         socket.reconnect();
                     });
                 },
-                update: function (optional) {
+                update: function (optional, ignoreCanvasLock=false) {
                     self.pan.x = Math.min(self.width / 2, Math.max(-self.width / 2, self.pan.x));
                     self.pan.y = Math.min(self.height / 2, Math.max(-self.height / 2, self.pan.y));
                     query.set({
@@ -1253,7 +1269,7 @@ window.App = (function () {
                     } else {
                         self.elements.board.addClass("pixelate");
                     }
-                    if (self.allowDrag || (!self.allowDrag && self.pannedWithKeys)) {
+                    if (ignoreCanvasLock || self.allowDrag || (!self.allowDrag && self.pannedWithKeys)) {
                         self.elements.mover.css({
                             width: self.width,
                             height: self.height,
@@ -1441,7 +1457,21 @@ window.App = (function () {
                 refresh: self.refresh,
                 updateViewport: self.updateViewport,
                 allowDrag: self.allowDrag,
-                validateCoordinates: self.validateCoordinates
+                setAllowDrag: (allowDrag) => {
+                    self.allowDrag = allowDrag === true;
+                    if (self.allowDrag)
+                        coords.lockIcon.fadeOut(200);
+                    else
+                        coords.lockIcon.fadeIn(200);
+                    ls.set('canvas.unlocked', self.allowDrag);
+                },
+                validateCoordinates: self.validateCoordinates,
+                get webInfo() {
+                    return self.webInfo;
+                },
+                get snipMode() {
+                    return self.webInfo && self.webInfo.snipMode === true;
+                }
             };
         })(),
         // heatmap init stuff
@@ -2151,11 +2181,7 @@ window.App = (function () {
                 },
                 audio: new Audio('place.wav'),
                 color: -1,
-                pendingPixel: {
-                    x: 0,
-                    y: 0,
-                    color: -1
-                },
+                lastPixel: null,
                 autoreset: true,
                 setAutoReset: function (v) {
                     self.autoreset = !!v;
@@ -2199,9 +2225,11 @@ window.App = (function () {
                     self._place(x, y);
                 },
                 _place: function (x, y) {
-                    self.pendingPixel.x = x;
-                    self.pendingPixel.y = y;
-                    self.pendingPixel.color = self.color;
+                    self.lastPixel = {
+                        x,
+                        y,
+                        color: self.color
+                    };
                     socket.send({
                         type: "pixel",
                         x: x,
@@ -2371,9 +2399,8 @@ window.App = (function () {
                     });
                     socket.on("captcha_status", function (data) {
                         if (data.success) {
-                            var pending = self.pendingPixel;
-                            self.switch(pending.color);
-                            self._place(pending.x, pending.y);
+                            self.switch(self.lastPixel.color);
+                            self._place(self.lastPixel.x, self.lastPixel.y);
 
                             analytics("send", "event", "Captcha", "Accepted")
                         } else {
@@ -2438,6 +2465,9 @@ window.App = (function () {
                 setNumberedPaletteEnabled: self.setNumberedPaletteEnabled,
                 get color() {
                     return self.color;
+                },
+                get lastPixel() {
+                    return self.lastPixel;
                 },
                 toggleReticule: self.toggleReticule,
                 toggleCursor: self.toggleCursor
@@ -2838,9 +2868,9 @@ window.App = (function () {
                 loadingStates: {},
                 banner: {
                     HTMLs: [
-                        crel('span', crel('i', {'class': 'fab fa-discord fa-is-left'}), ' We have a discord! Join here: ', crel('a', {'href': 'https://pxls.space/discord', 'target': '_blank'}, 'Discord Invite')).outerHTML,
-                        crel('span', {'style': 'font-size: .75rem'}, crel('i', {'class': 'fas fa-gavel fa-is-left'}), 'Chat is moderated, ensure you read the rules in the info panel.').outerHTML,
-                        crel('span', {'style': 'font-size: .8rem'}, crel('i', {'class': 'fas fa-question-circle fa-is-left'}), 'If you haven\'t already, make sure you read the FAQ top left!').outerHTML
+                        crel('span', crel('i', {'class': 'fab fa-discord fa-is-left'}), ' Official Discord: ', crel('a', {'href': 'https://pxls.space/discord', 'target': '_blank'}, 'Invite Link')).outerHTML,
+                        crel('span', {'style': ''}, crel('i', {'class': 'fas fa-gavel fa-is-left'}), 'Read the chat rules in the info panel.').outerHTML,
+                        crel('span', {'style': ''}, crel('i', {'class': 'fas fa-question-circle fa-is-left'}), 'Ensure you read the FAQ top left!').outerHTML
                     ],
                     curElem: 0,
                     intervalID: 0,
@@ -2892,6 +2922,9 @@ window.App = (function () {
                             crel('p', {'style': 'padding: 0; margin: 0;'}, data.message),
                             crel('span', {'style': 'font-style: italic'}, `Sent from ${data.sender || '$Unknown'}`)
                         ), {closeExisting: false});
+                    });
+                    socket.on('received_report', (data) => {
+                        new SLIDEIN.Slidein(`A new ${data.report_type.toLowerCase()} report has been received.`, 'info-circle').show().closeAfter(3000);
                     });
 
                     var useMono = ls.get("monospace_lookup");
@@ -2957,6 +2990,16 @@ window.App = (function () {
                             place.setNumberedPaletteEnabled(this.checked === true);
                         });
 
+                    board.setAllowDrag(ls.get('canvas.unlocked') !== false); // false check for new connections
+                    $('#lockCanvasToggle').prop('checked', board.allowDrag)
+                        .change(function() {
+                            board.setAllowDrag(this.checked === false); // updates localStorage for us
+                        });
+
+                    const _chatPanel = document.querySelector('aside.panel[data-panel="chat"]');
+                    if (_chatPanel) {
+                        _chatPanel.classList.toggle('horizontal', ls.get('chat.horizontal') === true);
+                    }
 
                     const numOrDefault = (n, def) => isNaN(n) ? def : n;
                     const colorBrightnessLevel = numOrDefault(parseFloat(ls.get("colorBrightness")), 1);
@@ -2994,7 +3037,7 @@ window.App = (function () {
                             self.elements.mainBubble.attr('position', e.target.value);
                         });
 
-                    const possiblyMobile = window.innerWidth < 768 && navigator.userAgent.includes('Mobile');
+                    const possiblyMobile = window.innerWidth < 768 && nua.includes('Mobile');
 
                     let initialShowReticule = ls.get('ui.show-reticule');
                     if (initialShowReticule === null) {
@@ -3468,12 +3511,15 @@ window.App = (function () {
                             document.body.classList.toggle(`panel-${panelPosition}`, true);
                             if (panel.classList.contains('half-width')) {
                                 document.body.classList.toggle(`panel-${panelPosition}-halfwidth`, true);
+                            } else if (panel.classList.contains('horizontal')) {
+                                document.body.classList.toggle('panel-horizontal', true);
                             }
                         } else {
                             $(window).trigger("pxls:panel:closed", panelDescriptor);
                             document.body.classList.toggle("panel-open", document.querySelectorAll('.panel.open').length - 1 > 0);
                             document.body.classList.toggle(`panel-${panelPosition}`, false);
                             document.body.classList.toggle(`panel-${panelPosition}-halfwidth`, false);
+                            document.body.classList.toggle('panel-horizontal', false);
                         }
                         panel.classList.toggle('open', state);
                     }
@@ -3697,7 +3743,7 @@ window.App = (function () {
                                                         chatban.type !== 'UNBAN' ? ([
                                                             crel('tr',
                                                                 crel('th', 'Length:'),
-                                                                crel('td', (chatban.type.toUpperCase().trim() === 'PERMA') ? 'Permanent' : `${chatban.expiry-chatban.when}s`)
+                                                                crel('td', (chatban.type.toUpperCase().trim() === 'PERMA') ? 'Permanent' : `${chatban.expiry-chatban.when}s${(chatban.expiry-chatban.when) >= 60 ? ` (${moment.duration(chatban.expiry-chatban.when, 'seconds').humanize()})` : ''}`)
                                                             ),
                                                             (chatban.type.toUpperCase().trim() === 'PERMA') ? null : crel('tr',
                                                                 crel('th', 'Expiry:'),
@@ -4157,7 +4203,7 @@ window.App = (function () {
                     }
 
                     // init triggers
-                    let triggerEmoji = new TH.Trigger(':', 'emoji', false, true);
+                    let triggerEmoji = new TH.Trigger(':', 'emoji', false, true, 2);
                     let triggerUsers = new TH.Trigger('@', 'users', true, false);
 
                     // init typeahead
@@ -4336,54 +4382,57 @@ window.App = (function () {
                     let body = crel('div', {'class': 'chat-settings-wrapper'});
 
                     let _cb24hTimestamps = crel('input', {'type': 'checkbox'});
-                    let lbl24hTimestamps = crel('label', {'style': 'display: block;'}, _cb24hTimestamps, '24 Hour Timestamps');
+                    let lbl24hTimestamps = crel('label', _cb24hTimestamps, '24 Hour Timestamps');
 
                     let _cbPixelPlaceBadges = crel('input', {'type': 'checkbox'});
-                    let lblPixelPlaceBadges = crel('label', {'style': 'display: block;'}, _cbPixelPlaceBadges, 'Show pixel-placed badges');
+                    let lblPixelPlaceBadges = crel('label', _cbPixelPlaceBadges, 'Show pixel-placed badges');
 
                     let _cbPings = crel('input', {'type': 'checkbox'});
-                    let lblPings = crel('label', {'style': 'display: block;'}, _cbPings, 'Enable pings');
+                    let lblPings = crel('label', _cbPings, 'Enable pings');
 
                     let _cbPingAudio = crel('select', {},
                         crel('option', {'value': 'off'}, 'Off'),
                         crel('option', {'value': 'discrete'}, 'Only when necessary'),
                         crel('option', {'value': 'always'}, 'Always')
                     );
-                    let lblPingAudio = crel('div', {'style': 'display: block;'},
-                        'Play sound on ping',
+                    let lblPingAudio = crel('label',
+                        'Play sound on ping: ',
                         _cbPingAudio
                     );
 
                     let _rgPingAudioVol = crel('input', {'type': 'range', min: 0, max: 100});
                     let _txtPingAudioVol = crel('span');
-                    let lblPingAudioVol = crel('label', {'style': 'display: block;'},
-                        'Ping sound volume',
+                    let lblPingAudioVol = crel('label',
+                        'Ping sound volume: ',
                         _rgPingAudioVol,
                         _txtPingAudioVol
                     );
 
                     let _cbBanner = crel('input', {'type': 'checkbox'});
-                    let lblBanner = crel('label', {'style': 'display: block;'}, _cbBanner, 'Enable the rotating banner under chat');
+                    let lblBanner = crel('label', _cbBanner, 'Enable the rotating banner under chat');
 
                     let _cbTemplateTitles = crel('input', {'type': 'checkbox'});
-                    let lblTemplateTitles = crel('label', {'style': 'display: block;'}, _cbTemplateTitles, 'Replace template titles with URLs in chat where applicable');
+                    let lblTemplateTitles = crel('label', _cbTemplateTitles, 'Replace template titles with URLs in chat where applicable');
 
                     let _txtFontSize = crel('input', {'type': 'number', 'min': '1', 'max': '72'});
                     let _btnFontSizeConfirm = crel('button', {'class': 'buton'}, crel('i', {'class': 'fas fa-check'}));
-                    let lblFontSize = crel('label', {'style': 'display: block;'}, 'Font Size: ', _txtFontSize, _btnFontSizeConfirm);
+                    let lblFontSize = crel('label', 'Font Size: ', _txtFontSize, _btnFontSizeConfirm);
+
+                    let _cbHorizontal = crel('input', {'type': 'checkbox'});
+                    let lblHorizontal = crel('label', _cbHorizontal, 'Enable horizontal chat');
 
                     let _selInternalClick = crel('select',
                         Object.values(self.TEMPLATE_ACTIONS).map(action =>
                             crel('option', {'value': action.id}, action.pretty)
                         )
                     );
-                    let lblInternalAction = crel('label', {'style': 'display: block;'}, 'Default internal link action click: ', _selInternalClick);
+                    let lblInternalAction = crel('label', 'Default internal link action click: ', _selInternalClick);
 
                     let _selUsernameColor = crel('select', {'class': 'username-color-picker'},
                         user.isStaff() ? crel('option', {value: -1, 'class': 'rainbow'}, 'rainbow') : null,
                         place.getPalette().map((x, i) => crel('option', {value: i, 'data-idx': i, style: `background-color: ${x}`}, x))
                     );
-                    let lblUsernameColor = crel('label', {'style': 'display: block;'}, 'Username Color: ', _selUsernameColor);
+                    let lblUsernameColor = crel('label', 'Username Color: ', _selUsernameColor);
 
                     let _selIgnores = crel('select', {'class': 'user-ignores', 'style': 'font-family: monospace; padding: 5px; border-radius: 5px;'},
                         self.getIgnores().sort((a, b) => a.toLocaleLowerCase().localeCompare(b.toLocaleLowerCase())).map(x =>
@@ -4463,6 +4512,18 @@ window.App = (function () {
                         ls.set('chat.use-template-urls', this.checked === true);
                     });
 
+                    _cbHorizontal.checked = ls.get('chat.horizontal') === true;
+                    _cbHorizontal.addEventListener('change', function() {
+                        ls.set('chat.horizontal', this.checked === true);
+                        const _chatPanel = document.querySelector('aside.panel[data-panel="chat"]');
+                        if (_chatPanel) {
+                            _chatPanel.classList.toggle('horizontal', this.checked === true);
+                            if (_chatPanel.classList.contains('open')) {
+                                document.body.classList.toggle('panel-horizontal', this.checked === true);
+                            }
+                        }
+                    });
+
                     _btnUnignore.addEventListener('click', function() {
                         if (self.removeIgnore(_selIgnores.value)) {
                             _selIgnores.querySelector(`option[value="${_selIgnores.value}"]`).remove();
@@ -4485,18 +4546,19 @@ window.App = (function () {
 
                     crel(body,
                         crel('h3', {'class': 'chat-settings-title'}, 'Chat Settings'),
-                        lbl24hTimestamps,
-                        lblPixelPlaceBadges,
-                        lblPings,
-                        lblPingAudio,
-                        lblPingAudioVol,
-                        lblBanner,
-                        lblTemplateTitles,
-                        lblFontSize,
-                        lblInternalAction,
-                        lblUsernameColor,
-                        lblIgnores,
-                        lblIgnoresFeedback
+                        [
+                            lbl24hTimestamps,
+                            lblPixelPlaceBadges,
+                            lblPings,
+                            lblHorizontal,
+                            lblPingAudio,
+                            lblPingAudioVol,
+                            lblBanner,
+                            lblFontSize,
+                            lblUsernameColor,
+                            lblIgnores,
+                            lblIgnoresFeedback
+                        ].map(x => crel('div', {'class': 'd-block'}, x))
                     )
                     modal.show(modal.buildDom(
                         crel('h2', {'class': 'modal-title'}, 'Chat Settings'),
@@ -4614,7 +4676,7 @@ window.App = (function () {
                     }
                     self.typeahead.helper.getDatabase('users').addEntry(packet.author, packet.author);
                     if (self.ignored.indexOf(packet.author) >= 0) return;
-                    let hasPing = ls.get('chat.pings-enabled') === true && user.isLoggedIn() && packet.message_raw
+                    let hasPing = !board.snipMode && ls.get('chat.pings-enabled') === true && user.isLoggedIn() && packet.message_raw
                         .toLowerCase()
                         .split(' ')
                         .some((s) => s.search(new RegExp(`@${user.getUsername().toLowerCase()}(?![a-zA-Z0-9_\-])`)) == 0);
@@ -4762,7 +4824,9 @@ window.App = (function () {
                                 if (anchorTarget) elem.target = anchorTarget;
                             }
 
-                            str = str.replace(x.raw, elem.outerHTML);
+                            if (!str.includes(elem.outerHTML)) {
+                                str = str.split(x.raw).join(elem.outerHTML);
+                            }
                         }
 
                         //any other text manipulation after anchor insertion
@@ -5078,16 +5142,20 @@ window.App = (function () {
                             let _selBanReason = crel('select',
                                 crel('option', 'Rule 3: Spam'),
                                 crel('option', 'Rule 1: Chat civility'),
+                                crel('option', 'Rule 2: Hate Speech'),
                                 crel('option', 'Rule 5/6: NSFW'),
                                 crel('option', 'Rule 4: Copy/pastas'),
-                                crel('option', {'value': '0'}, 'Custom')
+                                crel('option', 'Custom')
                             );
 
-                            let _customReasonWrap = crel('div', {'style': 'display: none; margin-top: .5rem;'});
-                            let _txtCustomBanReason = crel('input', {'type': 'text', 'name': 'txtCustomReason', 'style': 'display: inline-block; width: auto;'});
+                            let _additionalReasonInfoWrap = crel('div', {'style': 'margin-top: .5rem;'});
+                            let _txtAdditionalReason = crel('textarea', {
+                                'type': 'text',
+                                'name': 'txtAdditionalReasonInfo'
+                            });
 
                             let _purgeWrap = crel('div', {'style': 'display: block;'});
-                            let _rbPurgeYes = crel('input', {'type': 'radio', 'name': 'rbPurge', 'checked': 'true'});
+                            let _rbPurgeYes = crel('input', {'type': 'radio', 'name': 'rbPurge', 'checked': String(!board.snipMode)});
                             let _rbPurgeNo = crel('input', {'type': 'radio', 'name': 'rbPurge'});
 
                             let _reasonWrap = crel('div', {'style': 'display: block;'});
@@ -5107,11 +5175,9 @@ window.App = (function () {
                                 crel(_reasonWrap,
                                     crel('h5', 'Reason'),
                                     _selBanReason,
-                                    crel(_customReasonWrap,
-                                        crel('label', 'Reason: ', _txtCustomBanReason)
-                                    )
+                                    crel(_additionalReasonInfoWrap, _txtAdditionalReason)
                                 ),
-                                crel(_purgeWrap,
+                                board.snipMode ? null : crel(_purgeWrap,
                                     crel('h5', 'Purge Messages'),
                                     crel('label', {'style': 'display: inline;'}, _rbPurgeYes, 'Yes'),
                                     crel('label', {'style': 'display: inline;'}, _rbPurgeNo, 'No')
@@ -5135,13 +5201,15 @@ window.App = (function () {
                             });
                             _selCustomLength.selectedIndex = 1; //minutes
 
-                            _selBanReason.addEventListener('change', function() {
-                                let isCustom = this.value === '0';
-                                _customReasonWrap.style.display = isCustom ? 'block' : 'none';
-                                _txtCustomBanReason.required = isCustom;
-                            });
+                            function updateAdditionalTextarea() {
+                                const isCustom = _selBanReason.value === 'Custom';
+                                _txtAdditionalReason.placeholder = isCustom ? 'Custom reason' : 'Additional information (if applicable)';
+                                _txtAdditionalReason.required = isCustom;
+                            }
+                            updateAdditionalTextarea();
+                            _selBanReason.addEventListener('change', updateAdditionalTextarea);
 
-                            _txtCustomBanReason.onkeydown = e => e.stopPropagation();
+                            _txtAdditionalReason.onkeydown = e => e.stopPropagation();
                             _txtCustomLength.onkeydown = e => e.stopPropagation();
 
                             chatbanContainer.onsubmit = e => {
@@ -5149,14 +5217,18 @@ window.App = (function () {
                                 let postData = {
                                     type: 'temp',
                                     reason: 'none provided',
-                                    removalAmount: _rbPurgeYes.checked ? -1 : 0,
+                                    removalAmount: !board.snipMode ? (_rbPurgeYes.checked ? -1 : 0) : 0, // message purges are based on username, so if we purge when everyone in chat is -snip-, we aren't gonna have a good time
                                     banLength: 0
                                 };
 
-                                if (_selBanReason.value === '0') { //custom
-                                    postData.reason = _txtCustomBanReason.value;
+
+                                if (_selBanReason.value === 'Custom') {
+                                    postData.reason = _txtAdditionalReason.value
                                 } else {
                                     postData.reason = _selBanReason.value;
+                                    if (_txtAdditionalReason.value) {
+                                        postData.reason += `. Additional information: ${_txtAdditionalReason.value}`;
+                                    }
                                 }
 
                                 if (_selBanLength.value === '-3') { //unban
@@ -5202,7 +5274,6 @@ window.App = (function () {
                                 nonce: this.dataset.nonce,
                                 reason: _txtReason.value
                             }, () => {
-                                deleteWrapper.remove();
                                 modal.closeAll();
                             }).fail(() => {
                                 modal.showText('Failed to delete');
@@ -5304,12 +5375,18 @@ window.App = (function () {
                         }
                         case 'lookup-mod': {
                             if (user.admin && user.admin.checkUser && user.admin.checkUser.check) {
-                                user.admin.checkUser.check(reportingTarget);
+                                let type = board.snipMode ? 'nonce' : 'username';
+                                let arg = board.snipMode ? this.dataset.nonce : reportingTarget;
+                                user.admin.checkUser.check(arg, type);
                             }
                             break;
                         }
                         case 'lookup-chat': {
-                            socket.send({type: 'ChatLookup', who: reportingTarget});
+                            socket.send({
+                                type: 'ChatLookup',
+                                arg: board.snipMode ? this.dataset.nonce : reportingTarget,
+                                mode: board.snipMode ? 'nonce' : 'username'
+                            });
                             break;
                         }
                         case 'request-rename': {
@@ -5450,7 +5527,8 @@ window.App = (function () {
                 elements: {
                     palette: $("#palette"),
                     timer_overlay: $("#cd-timer-overlay"),
-                    timer_bubble: $("#cooldown-timer")
+                    timer_bubble: $("#cooldown-timer"),
+                    timer_chat: $('#txtMobileChatCooldown'),
                 },
                 isOverlay: false,
                 hasFiredNotification: true,
@@ -5502,7 +5580,8 @@ window.App = (function () {
                             secsStr = secs < 10 ? "0" + secs : secs,
                             minutes = Math.floor(delta / 60),
                             minuteStr = minutes < 10 ? "0" + minutes : minutes;
-                        self.elements.timer.text(minuteStr + ":" + secsStr);
+                        self.elements.timer.text(`${minuteStr}:${secsStr}`);
+                        self.elements.timer_chat.text(`(${minuteStr}:${secsStr})`);
 
                         document.title = uiHelper.getTitle(`[${minuteStr}:${secsStr}]`);
 
@@ -5524,6 +5603,7 @@ window.App = (function () {
                         self.elements.timer.css("left", "0");
                     }
                     self.elements.timer.hide();
+                    self.elements.timer_chat.text('');
 
                     if (alertDelay > 0) {
                         setTimeout(() => {
@@ -5558,6 +5638,7 @@ window.App = (function () {
                         ? self.elements.timer_overlay
                         : self.elements.timer_bubble;
                     self.elements.timer.hide();
+                    self.elements.timer_chat.text('');
 
                     setTimeout(function () {
                         if (self.cooledDown() && uiHelper.getAvailable() === 0) {
@@ -5649,14 +5730,11 @@ window.App = (function () {
                  * @param {number} y The Y coordinate for the link to have.
                  */
                 getLinkToCoords: (x = 0, y = 0, scale = 20) => {
-                    var append = "";
-                    query.has("template") ? append += "&template=" + query.get("template") : 0;
-                    query.has("tw") ? append += "&tw=" + query.get("tw") : 0;
-                    query.has("oo") ? append += "&oo=" + query.get("oo") : 0;
-                    query.has("ox") ? append += "&ox=" + query.get("ox") : 0;
-                    query.has("oy") ? append += "&oy=" + query.get("oy") : 0;
-                    query.has("title") ? append += "&title=" + query.get("title") : "";
-                    return `${location.origin}/#x=${Math.floor(x)}&y=${Math.floor(y)}&scale=${scale}${append}`;
+                    const templateConfig = ['template', 'tw', 'oo', 'ox', 'oy', 'title']
+                        .filter(query.has)
+                        .map((conf) => `${conf}=${encodeURIComponent(query.get(conf))}`)
+                        .join('&')
+                    return `${location.origin}/#x=${Math.floor(x)}&y=${Math.floor(y)}&scale=${scale}&${templateConfig}`;
                 }
             };
             return {
@@ -6106,8 +6184,7 @@ window.App = (function () {
                     checkbox: $("#chrome-canvas-offset-toggle")
                 },
                 init: () => {
-                    const chromeUAMatch = navigator.userAgent.match(/Chrome\/(\d+)/);
-                    if (!chromeUAMatch || parseInt(chromeUAMatch[1]) < 78) {
+                    if (!nua.match(/AppleWebKit/)) {
                         self.elements.setting.hide();
                         return;
                     }
@@ -6189,6 +6266,7 @@ window.App = (function () {
                         escapeClose: true,
                         clickClose: true,
                         showClose: true,
+                        closeText: '<i class="fas fa-times"></i>',
                     }, {removeOnClose: true}, opts);
                     if (!document.body.contains(modal)) {
                         document.body.appendChild(modal);
@@ -6221,7 +6299,7 @@ window.App = (function () {
                         elem[0].remove();
                 }
             };
-        })();
+        })()
     // init progress
     query.init();
     board.init();
@@ -6245,6 +6323,9 @@ window.App = (function () {
     chromeOffsetWorkaround.init();
     // and here we finally go...
     board.start();
+
+
+    window.TH = window.TH || TH;
 
 
     return {
@@ -6298,6 +6379,7 @@ window.App = (function () {
             ban.me(4);
         },
         chat,
-        typeahead: chat.typeahead
+        typeahead: chat.typeahead,
+        modal,
     };
 })();

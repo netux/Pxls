@@ -934,7 +934,9 @@ public class Database {
                 .bind("x", x)
                 .bind("y", y)
                 .bind("message", message)
-                .execute());
+                .executeAndReturnGeneratedKeys("id")
+                .mapTo(Integer.TYPE)
+                .first());
     }
 
     /**
@@ -942,11 +944,13 @@ public class Database {
      * @param reported The banned {@link User}'s ID.
      * @param message The report message.
      */
-    public void insertServerReport(int reported, String message) {
-        jdbi.useHandle(handle -> handle.createUpdate("INSERT INTO reports (who, pixel_id, x, y, message, reported, time) VALUES (0, 0, 0, 0, :message, :reported, (SELECT EXTRACT(EPOCH FROM NOW())))")
+    public Integer insertServerReport(int reported, String message) {
+        return jdbi.withHandle(handle -> handle.createUpdate("INSERT INTO reports (who, pixel_id, x, y, message, reported, time) VALUES (0, 0, 0, 0, :message, :reported, (SELECT EXTRACT(EPOCH FROM NOW())))")
                 .bind("message", message)
                 .bind("reported", reported)
-                .execute());
+                .executeAndReturnGeneratedKeys("id")
+                .mapTo(Integer.TYPE)
+                .first());
     }
 
     /**
@@ -1206,7 +1210,9 @@ public class Database {
                 .bind("target", targetID)
                 .bind("initiator", initiatorID)
                 .bind("report_message", reportMessage)
-                .execute());
+                .executeAndReturnGeneratedKeys("id")
+                .mapTo(Integer.TYPE)
+                .first());
     }
 
     /**
@@ -1292,9 +1298,10 @@ public class Database {
      * Returns the requested user's last 100 messages and chatbans.
      *
      * @param username The {@link User}'s name to look up.
+     * @param history_limit The maximum number of chat message history to fetch.
      * @return The requested user's last 100 messages and chatbans.
      */
-    public ServerChatLookup runChatLookupForUsername(String username) {
+    public ServerChatLookup runChatLookupForUsername(String username, int history_limit) {
         // we want to run all these queries with their own handle so we don't hit the pool x times.
         return jdbi.withHandle(handle -> {
             Optional<DBUser> dbu = handle.createQuery(SQL_USER_BY_NAME)
@@ -1309,8 +1316,9 @@ public class Database {
                     .map(new DBExtendedChatban.Mapper())
                     .list();
 
-            List<DBChatMessage> messages = handle.createQuery("SELECT * FROM chat_messages WHERE author = :uid ORDER BY sent DESC LIMIT 100")
+            List<DBChatMessage> messages = handle.createQuery("SELECT * FROM chat_messages WHERE author = :uid ORDER BY sent DESC LIMIT :lim")
                     .bind("uid", dbUser.id)
+                    .bind("lim", history_limit)
                     .map(new DBChatMessage.Mapper())
                     .list();
 
@@ -1464,8 +1472,21 @@ public class Database {
      * @param who The ID of the {@link User}.
      */
     private void decreasePixelCount(int who) {
-        jdbi.useHandle(handle -> handle.createUpdate("UPDATE users SET pixel_count = pixel_count - 1, pixel_count_alltime = pixel_count_alltime - 1 WHERE id = :who")
-                .bind("who", who)
-                .execute());
+        if (!App.shouldIncreaseSomePixelCount()) return;
+        Config config = App.getConfig();
+        boolean increaseAllTime = config.getBoolean("pixelCounts.countTowardsAlltime");
+        boolean increaseCanvas = config.getBoolean("pixelCounts.countTowardsCurrent");
+        jdbi.useHandle(handle -> {
+            if (increaseAllTime) {
+                handle.createUpdate("UPDATE users SET pixel_count_alltime = pixel_count_alltime - 1 WHERE id = :who")
+                    .bind("who", who)
+                    .execute();
+            }
+            if (increaseCanvas) {
+                handle.createUpdate("UPDATE users SET pixel_count = pixel_count - 1 WHERE id = :who")
+                    .bind("who", who)
+                    .execute();
+            }
+        });
     }
 }

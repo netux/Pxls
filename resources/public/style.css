@@ -1075,10 +1075,7 @@ aside.panel {
     top: 0;
     max-width: 50%;
     min-width: 30%;
-    width: 30%;
     height: 100%;
-    max-height: 100%;
-    min-height: 100%;
     box-shadow: 0 0 10px 5px #0009;
     background-color: #dfdfdf;
     z-index: 21;
@@ -1087,6 +1084,13 @@ aside.panel {
 
 .panel.half-width {
     width: 50% !important;
+}
+
+.panel.horizontal {
+    width: 100%;
+    height: 50%;
+    max-width: initial;
+    min-height: initial;
 }
 
 .panel header {
@@ -1099,6 +1103,10 @@ aside.panel {
     left: -55%;
 }
 
+.panel.left.horizontal {
+    left: -105%;
+}
+
 .panel.left.open, .panel.left[data-state=open] {
     left: 0;
 }
@@ -1107,6 +1115,10 @@ aside.panel {
     left: initial;
     transition: right ease-in-out .25s;
     right: -55%;
+}
+
+.panel.right.horizontal {
+    right: -105%;
 }
 
 .panel.right.open, .panel.right[data-state=open] {
@@ -1198,36 +1210,36 @@ article .body {
     margin: 0 !important;
 }
 
-body.panel-open #ui {
+body.panel-open:not(.panel-horizontal) #ui {
     width: 70vw;
 }
 
-body.panel-open.panel-left #ui {
+body.panel-open.panel-left:not(.panel-horizontal) #ui {
     left: 30vw;
     right: 0;
 }
 
-body.panel-open.panel-left.panel-left-halfwidth #ui {
+body.panel-open.panel-left:not(.panel-horizontal).panel-left-halfwidth #ui {
     left: 50vw;
     width: 50vw;
 }
 
-body.panel-open.panel-right.panel-right-halfwidth #ui {
+body.panel-open.panel-right:not(.panel-horizontal).panel-right-halfwidth #ui {
     right: 50vw;
     width: 50vw;
 }
 
-body.panel-left.panel-right #ui {
+body.panel-left.panel-right:not(.panel-horizontal) #ui {
     left: 30vw;
     width: 40vw;
 }
 
-body.panel-left.panel-left-halfwidth.panel-right #ui {
+body.panel-left.panel-left-halfwidth.panel-right:not(.panel-horizontal) #ui {
     left: 50vw;
     width: 20vw;
 }
 
-body.panel-left.panel-right.panel-right-halfwidth #ui {
+body.panel-left.panel-right:not(.panel-horizontal).panel-right-halfwidth #ui {
     right: 50vw;
     width: 20vw;
 }
@@ -1251,7 +1263,7 @@ body.panel-left.panel-right.panel-right-halfwidth #ui {
 
 ul.chat-body li.chat-line {
     /*border:1px solid #000;*/
-    line-height: 1.5rem;
+    line-height: 1.5em;
     border-bottom: 1px solid #bfbfbf;
     overflow: hidden;
 }
@@ -1278,10 +1290,10 @@ li.chat-line i[title] {
 }
 
 li.chat-line .text-badge, header .text-badge {
-    line-height: 1rem;
+    line-height: 1em;
     background-color: #ccc;
-    padding: .15rem .5rem;
-    border-radius: 1rem;
+    padding: .15em .5em;
+    border-radius: 1em;
     color: #770;
     cursor: default;
     -webkit-user-select: none;
@@ -1358,12 +1370,14 @@ li.chat-line .actions [data-action]:not(:last-of-type):not(:only-child) {
 }
 
 .chat-wrapper .bottom-banner {
-    height: 1.25rem;
-    line-height: 1.25rem;
-    font-size: 1rem;
+    height: 1.25em;
+    line-height: 1.25em;
+    font-size: 1em;
     text-align: right;
     font-style: italic;
     opacity: 100%;
+    overflow-y: hidden;
+    text-align: center;
 }
 
 .chat-wrapper .bottom-banner.transparent {
@@ -1395,7 +1409,7 @@ li.chat-line .actions [data-action]:not(:last-of-type):not(:only-child) {
     width: 100%;
     height: 100%;
     margin: 0;
-    padding: 5px;
+    padding: 5px 1.75rem 5px 5px;
     resize: none;
     font-family: Arial, Helvetica, sans-serif;
 }
@@ -1491,11 +1505,11 @@ li.chat-line .actions [data-action]:not(:last-of-type):not(:only-child) {
 }
 
 #typeahead ul li {
-    font-size: 1rem;
-    line-height: 1.5rem;
+    font-size: 1em;
+    line-height: 1.5em;
     cursor: pointer;
     user-select: none;
-    text-indent: .75rem;
+    text-indent: .75em;
     background-color: #a3a3a3;
     border-radius: 4px;
     padding: 3px;
@@ -1844,7 +1858,7 @@ ul.chat-history, ul.chatban-history {
 
 /* Chat settings tweaks */
 .chat-settings-wrapper label {
-    display: block;
+    display: inline-block;
     cursor: pointer;
     user-select: none;
     margin: 6px 0;
@@ -1852,6 +1866,10 @@ ul.chat-history, ul.chatban-history {
 
 .chat-settings-wrapper input:not([type=checkbox]) {
     border: 1px solid #888;
+}
+
+.d-block {
+    display: block !important;
 }
 
 /* Notifications */
@@ -1924,6 +1942,23 @@ ul.chat-history, ul.chatban-history {
     outline: 0;
 }
 
+.modal a.close-modal {
+    position: absolute;
+    font-size: 1.25em;
+    top: 0;
+    right: 0;
+    background: #660000;
+    width: 1.5em;
+    height: 1.5em;
+    line-height: 1.5em;
+    text-align: center;
+    color: #eee;
+    text-decoration: none;
+    text-indent: 0;
+    border-radius: 0 6px 0 12px;
+    box-shadow: 1px 1px 5px #660000aa;
+}
+
 .modal .modal-footer {
     text-align: right;
 }
@@ -1984,13 +2019,32 @@ ul.chat-history, ul.chatban-history {
 }
 
 @media (max-width: 768px) {
-    .modal {
-        min-width: 1vw;
-        max-width: 95vw;
+    .panel, .panel.half-width {
+        max-width: 100% !important;
+        width: 100% !important;
+    }
+
+    .panel.left {
+        left: -105%;
+    }
+
+    .panel.right {
+        right: -105%;
+    }
+
+    body.panel-open #ui {
+        right: initial;
+        width: initial;
+        transition: none;
     }
 
     .mobile-only {
         display: initial;
+    }
+
+    .modal {
+        min-width: 1vw;
+        max-width: 95vw;
     }
 
     .palette {
@@ -2026,36 +2080,6 @@ ul.chat-history, ul.chatban-history {
         max-height: 100%;
         overflow: auto;
         width: 95%;
-    }
-
-    .panel, .panel.half-width {
-        max-width: 100% !important;
-        width: 100% !important;
-    }
-
-    .panel.left {
-        left: -105%;
-    }
-
-    .panel.right {
-        right: -105%;
-    }
-
-    body.panel-open #ui {
-        right: initial;
-        width: initial;
-        transition: none;
-    }
-
-    #ui #main-bubble {
-        top: 4rem;
-        bottom: initial;
-        left: 1rem;
-        right: initial;
-    }
-
-    #bubble-position {
-        opacity: .5;
     }
 
     #chat-hint {
