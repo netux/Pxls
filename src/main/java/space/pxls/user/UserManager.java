@@ -28,6 +28,15 @@ public class UserManager {
         }
     }
 
+    public void reloadRoles() {
+        for (User u : userCache.values()) {
+            u.reloadRolesFromDatabase();
+        }
+        for (User u : App.getServer().getAuthedUsers().values()) {
+            u.reloadRolesFromDatabase();
+        }
+    }
+
     private void addUserToken(String token, User user) {
         usersByToken.put(token, user);
         App.getDatabase().createSession(user.getId(), token);

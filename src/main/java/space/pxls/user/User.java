@@ -97,6 +97,11 @@ public class User {
         }
     }
 
+    public void reloadRolesFromDatabase() {
+        List<Role> roles = App.getDatabase().getUserRoles(id);
+        this.roles = roles;
+    }
+
     public int getId() {
         return id;
     }

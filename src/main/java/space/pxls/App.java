@@ -154,10 +154,10 @@ public class App {
                     System.out.println("Reloaded configuration");
                     loadRoles();
                     System.out.println("Reloaded roles configuration");
+                    userManager.reloadRoles();
+                    System.out.println("Reloaded authed user's roles from database");
                     FactionManager.getInstance().invalidateAll();
                     System.out.println("Invalidated all factions");
-                    userManager.reload();
-                    System.out.println("Reloaded user manager");
                     System.out.println("Success!");
                 } catch (Exception x) {
                     x.printStackTrace();
