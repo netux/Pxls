@@ -9,6 +9,7 @@ import com.mitchellbosecke.pebble.loader.ClasspathLoader;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.handlers.Cookie;
 import io.undertow.server.handlers.CookieImpl;
+import io.undertow.server.handlers.CookieSameSiteMode;
 import io.undertow.server.handlers.form.FormData;
 import io.undertow.server.handlers.form.FormDataParser;
 import io.undertow.util.*;
@@ -160,7 +161,7 @@ public class WebHandler {
                     m.put("requested_self", requested_self);
                     m.put("profile_of", profileUser);
                     m.put("factions", factions);
-                    m.put("palette", App.getConfig().getStringList("board.palette"));
+                    m.put("palette", App.getPalette().getColors().stream().map(color -> color.getValue()).collect(Collectors.toList()));
                     m.put("route_root", requested_self ? "/profile" : String.format("/profile/%s", requested));
 
                     if (requested_self) {
@@ -319,7 +320,7 @@ public class WebHandler {
                                 }
                             } else {
                                 if (faction.getOwner() == user.getId()) {
-                                    sendBadRequest(exchange, "You can not leave a faction you own. Transfer ownership first.");
+                                    sendBadRequest(exchange, "You cannot leave a faction you own. Transfer ownership first.");
                                 } else {
                                     FactionManager.getInstance().leaveFaction(fid, user.getId());
                                     if (user.getDisplayedFaction() != null && user.getDisplayedFaction() == fid) {
@@ -632,6 +633,10 @@ public class WebHandler {
         }
     }
 
+    public AuthService getAuthServiceByID(String id) {
+        return services.get(id);
+    }
+
     private String getBanReason(HttpServerExchange exchange) {
         FormData data = exchange.getAttachment(FormDataParser.FORM_DATA);
         FormData.FormValue reason = data.getFirst("reason");
@@ -658,14 +663,35 @@ public class WebHandler {
     }
 
     private void setAuthCookie(HttpServerExchange exchange, String loginToken, int days) {
-        Calendar cal2 = Calendar.getInstance();
-        cal2.add(Calendar.DATE, -1);
-        exchange.setResponseCookie(new CookieImpl("pxls-token", loginToken).setPath("/").setExpires(cal2.getTime()));
-        Calendar cal = Calendar.getInstance();
-        cal.add(Calendar.DATE, days);
+        Calendar pastCalendar = Calendar.getInstance();
+        pastCalendar.add(Calendar.DATE, -1);
+        exchange.setResponseCookie(
+            new CookieImpl("pxls-token", "")
+                .setPath("/")
+                .setExpires(pastCalendar.getTime())
+        );
+
+        Calendar futureCalendar = Calendar.getInstance();
+        futureCalendar.add(Calendar.DATE, days);
         String hostname = App.getConfig().getString("host");
-        exchange.setResponseCookie(new CookieImpl("pxls-token", loginToken).setHttpOnly(true).setPath("/").setDomain("." + hostname).setExpires(cal.getTime()));
-        exchange.setResponseCookie(new CookieImpl("pxls-token", loginToken).setHttpOnly(true).setPath("/").setDomain(hostname).setExpires(cal.getTime()));
+        exchange.setResponseCookie(
+            new CookieImpl("pxls-token", loginToken)
+                .setHttpOnly(true)
+                .setSameSiteMode((exchange.isSecure() ? CookieSameSiteMode.NONE : CookieSameSiteMode.LAX).toString())
+                .setSecure(exchange.isSecure())
+                .setPath("/")
+                .setDomain("." + hostname)
+                .setExpires(futureCalendar.getTime())
+        );
+        exchange.setResponseCookie(
+            new CookieImpl("pxls-token", loginToken)
+                .setHttpOnly(true)
+                .setSameSiteMode((exchange.isSecure() ? CookieSameSiteMode.NONE : CookieSameSiteMode.LAX).toString())
+                .setSecure(exchange.isSecure())
+                .setPath("/")
+                .setDomain(hostname)
+                .setExpires(futureCalendar.getTime())
+        );
     }
 
     public void ban(HttpServerExchange exchange) {
@@ -1010,6 +1036,53 @@ public class WebHandler {
         exchange.endExchange();
     }
 
+    public void chatColorChange(HttpServerExchange exchange) {
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
+
+        User user = exchange.getAttachment(AuthReader.USER);
+        if (user == null) {
+            sendBadRequest(exchange);
+            return;
+        }
+
+        FormData data = exchange.getAttachment(FormDataParser.FORM_DATA);
+
+        FormData.FormValue nameColor = data.getFirst("color");
+        if (nameColor == null || nameColor.getValue().trim().isEmpty()) {
+            sendBadRequest(exchange);
+            return;
+        }
+
+        try {
+            int t = Integer.parseInt(nameColor.getValue());
+            if (t >= -3 && t < App.getPalette().getColors().size()) {
+                var hasAllDonatorColors = user.hasPermission("chat.usercolor.donator") || user.hasPermission("chat.usercolor.donator.*");
+                if (t == -1 && !user.hasPermission("chat.usercolor.rainbow")) {
+                    sendBadRequest(exchange, "Color reserved for staff members");
+                    return;
+                } else if (t == -2 && !(hasAllDonatorColors || user.hasPermission("chat.usercolor.donator.green"))) {
+                    sendBadRequest(exchange, "Color reserved for donators");
+                    return;
+                } else if (t == -3 && !(hasAllDonatorColors || user.hasPermission("chat.usercolor.donator.gray"))) {
+                    sendBadRequest(exchange, "Color reserved for donators");
+                    return;
+                }
+
+                user.setChatNameColor(t, true, !App.getConfig().getBoolean("oauth.snipMode"));
+
+                exchange.setStatusCode(200);
+                exchange.getResponseSender().send("{}");
+                exchange.endExchange();
+            } else {
+                sendBadRequest(exchange, "Color index out of bounds");
+                return;
+            }
+        } catch (NumberFormatException nfe) {
+            sendBadRequest(exchange, "Invalid color index");
+            return;
+        }
+    }
+
     public void forceNameChange(HttpServerExchange exchange) { //this is the admin endpoint which targets another user.
         exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
         User user = exchange.getAttachment(AuthReader.USER);
@@ -1118,7 +1191,7 @@ public class WebHandler {
         }
 
         toFlag.setRenameRequested(isRequested);
-        App.getDatabase().insertAdminLog(user.getId(), String.format("Flagged %s (%d) for name change", toFlag.getName(), toFlag.getId()));
+        App.getDatabase().insertAdminLog(user.getId(), String.format("%s %s (%d) for name change", isRequested ? "Flagged" : "Unflagged", toFlag.getName(), toFlag.getId()));
 
         exchange.setStatusCode(200);
         exchange.getResponseSender().send("{}");
@@ -1419,17 +1492,17 @@ public class WebHandler {
             if (user != null) {
                 exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
                 exchange.getResponseSender().send(App.getGson().toJson(
-                    new ServerUserInfo(
+                    new ExtendedUserInfo(
                         user.getName(),
-                        user.getLogin(),
                         user.getAllRoles(),
+                        user.getLogins(),
                         user.getPixelCount(),
                         user.getAllTimePixelCount(),
                         user.isBanned(),
                         user.getBanExpiryTime(),
                         user.getBanReason(),
-                        user.getLogin().split(":")[0],
-                        user.isOverridingCooldown(),
+                        user.loginsWithIP() ? "ip" : "service",
+                        user.getPlaceOverrides(),
                         !user.canChat(),
                         App.getDatabase().getChatBanReason(user.getId()),
                         user.isPermaChatbanned(),
@@ -1481,14 +1554,21 @@ public class WebHandler {
             return;
         }
 
-        // do additional checks for possible multi here
-        List<String> reports = new ArrayList<String>(); //left in `reports` here for future use, however signup IP checks have been moved to dupe IP checks on auth.
-        if (reports.size() > 0) {
-            String msg = "Potential dupe user. Reasons:\n\n";
-            for (String r : reports) {
-                msg += r + "\n";
+        // Do additional checks below:
+        List<String> reports = new ArrayList<String>();
+
+        // NOTE: Dupe IP checks are done on auth, not just signup.
+
+        // check username for filter hits
+        if (App.getConfig().getBoolean("textFilter.enabled") && TextFilter.getInstance().filterHit(name)) {
+            reports.add(String.format("Username filter hit on \"%s\"", name));
+        }
+
+        for (String reportMessage : reports) {
+            Integer rid = App.getDatabase().insertServerReport(user.getId(), reportMessage);
+            if (rid != null) {
+                App.getServer().broadcastToStaff(new ServerReceivedReport(rid, ServerReceivedReport.REPORT_TYPE_CANVAS));
             }
-            App.getDatabase().insertServerReport(user.getId(), msg);
         }
 
         String loginToken = App.getUserManager().logIn(user, ip);
@@ -1525,9 +1605,13 @@ public class WebHandler {
                 redirect = redirectCookie != null;
             }
             // let's just delete the redirect cookie
-            Calendar cal = Calendar.getInstance();
-            cal.add(Calendar.DATE, -1);
-            exchange.setResponseCookie(new CookieImpl("pxls-auth-redirect", "").setPath("/").setExpires(cal.getTime()));
+            Calendar pastCalendar = Calendar.getInstance();
+            pastCalendar.add(Calendar.DATE, -1);
+            exchange.setResponseCookie(
+                new CookieImpl("pxls-auth-redirect", "")
+                    .setPath("/")
+                    .setExpires(pastCalendar.getTime())
+            );
 
             if (!redirect && exchange.getQueryParameters().get("json") == null) {
                 exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/html");
@@ -1581,12 +1665,11 @@ public class WebHandler {
             }
 
             if (identifier != null) {
-                String login = id + ":" + identifier;
-                User user = App.getUserManager().getByLogin(login);
+                User user = App.getUserManager().getByLogin(id, identifier);
                 // If there is no user with that identifier, we make a signup token and tell the client to sign up with that token
                 if (user == null) {
                     if (service.isRegistrationEnabled()) {
-                        String signUpToken = App.getUserManager().generateUserCreationToken(login);
+                        String signUpToken = App.getUserManager().generateUserCreationToken(new UserLogin(id, identifier));
                         if (redirect) {
                             redirect(exchange, String.format("/auth_done.html?token=%s&signup=true", encodedURIComponent(signUpToken)));
                         } else {
@@ -1635,7 +1718,12 @@ public class WebHandler {
         if (service != null) {
             String state = service.generateState();
             if (redirect) {
-                exchange.setResponseCookie(new CookieImpl("pxls-auth-redirect", "1").setPath("/"));
+                exchange.setResponseCookie(
+                    new CookieImpl("pxls-auth-redirect", "1")
+                        .setSameSiteMode((exchange.isSecure() ? CookieSameSiteMode.NONE : CookieSameSiteMode.LAX).toString())
+                        .setSecure(exchange.isSecure())
+                        .setPath("/")
+                );
                 redirect(exchange, service.getRedirectUrl(state + "|redirect"));
             } else {
                 respond(exchange, StatusCodes.OK, new SignInResponse(service.getRedirectUrl(state + "|json")));
@@ -1646,6 +1734,8 @@ public class WebHandler {
     }
 
     public void info(HttpServerExchange exchange) {
+        User user = exchange.getAttachment(AuthReader.USER);
+
         exchange.getResponseHeaders()
                 .add(HttpString.tryFromString("Content-Type"), "application/json")
                 .add(HttpString.tryFromString("Access-Control-Allow-Origin"), "*");
@@ -1653,7 +1743,7 @@ public class WebHandler {
             App.getCanvasCode(),
             App.getWidth(),
             App.getHeight(),
-            App.getConfig().getStringList("board.palette"),
+            App.getPalette().getColors(),
             App.getConfig().getString("captcha.key"),
             (int) App.getConfig().getDuration("board.heatmapCooldown", TimeUnit.SECONDS),
             (int) App.getConfig().getInt("stacking.maxStacked"),
@@ -1661,7 +1751,9 @@ public class WebHandler {
             App.getRegistrationEnabled(),
             Math.min(App.getConfig().getInt("chat.characterLimit"), 2048),
             App.getConfig().getBoolean("chat.canvasBanRespected"),
-            App.getConfig().getBoolean("oauth.snipMode")
+            App.getConfig().getStringList("chat.bannerText"),
+            App.getConfig().getBoolean("oauth.snipMode"),
+            App.getConfig().getList("chat.customEmoji").unwrapped()
         )));
     }
 
@@ -1677,6 +1769,14 @@ public class WebHandler {
         }
 
         exchange.getResponseSender().send(ByteBuffer.wrap(App.getBoardData()));
+    }
+
+    public void initialdata(HttpServerExchange exchange) {
+        exchange.getResponseHeaders()
+                .put(Headers.CONTENT_TYPE, "application/binary")
+                .put(HttpString.tryFromString("Access-Control-Allow-Origin"), "*");
+
+        exchange.getResponseSender().send(ByteBuffer.wrap(App.getDefaultBoardData()));
     }
 
     public void heatmap(HttpServerExchange exchange) {
@@ -1717,7 +1817,7 @@ public class WebHandler {
         Deque<String> xq = exchange.getQueryParameters().get("x");
         Deque<String> yq = exchange.getQueryParameters().get("y");
 
-        if (xq.isEmpty() || yq.isEmpty()) {
+        if (xq == null || xq.isEmpty() || yq == null || yq.isEmpty()) {
             exchange.setStatusCode(StatusCodes.BAD_REQUEST);
             exchange.endExchange();
             return;
@@ -1740,7 +1840,10 @@ public class WebHandler {
             App.getDatabase().insertLookup(user.getId(), exchange.getAttachment(IPReader.IP));
         }
 
-        exchange.getResponseSender().send(App.getGson().toJson(((user == null) || !user.hasPermission("board.lookup") ? Lookup.fromDB(App.getDatabase().getPixelAtUser(x, y).orElse(null)) : ExtendedLookup.fromDB(App.getDatabase().getPixelAt(x, y).orElse(null)))));
+        var lookup = user != null && user.hasPermission("board.check")
+            ? ExtendedLookup.fromDB(x, y)
+            : Lookup.fromDB(x, y);
+        exchange.getResponseSender().send(App.getGson().toJson(lookup));
     }
 
     public void report(HttpServerExchange exchange) {
@@ -1789,7 +1892,7 @@ public class WebHandler {
             exchange.endExchange();
             return;
         }
-        DBPixelPlacement pxl = App.getDatabase().getPixelByID(null, id);
+        DBPixelPlacementFull pxl = App.getDatabase().getPixelByID(null, id);
         if (pxl.x != x || pxl.y != y) {
             exchange.setStatusCode(StatusCodes.BAD_REQUEST);
             exchange.endExchange();

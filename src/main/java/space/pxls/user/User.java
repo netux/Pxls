@@ -5,7 +5,7 @@ import space.pxls.App;
 import space.pxls.data.DBUser;
 import space.pxls.data.DBUserPixelCounts;
 import space.pxls.server.packets.chat.Badge;
-import space.pxls.server.packets.chat.ServerChatUserUpdate;
+import space.pxls.server.packets.chat.ServerChatUserUpdateBuilder;
 import space.pxls.server.packets.socket.ClientUndo;
 import space.pxls.server.packets.chat.ServerChatBan;
 import space.pxls.server.packets.socket.ServerRename;
@@ -23,12 +23,13 @@ public class User {
     private int stacked;
     private int chatNameColor;
     private String name;
-    private String login;
     private String useragent;
     private List<Role> roles;
     private int pixelCount;
     private int pixelCountAllTime;
-    private boolean overrideCooldown;
+    private boolean loginWithIP;
+    private PlacementOverrides placementOverrides;
+    private boolean overrideCaptcha = false;
     private boolean flaggedForCaptcha = true;
     private boolean justShowedCaptcha;
     private boolean lastPlaceWasStack = false;
@@ -53,16 +54,16 @@ public class User {
 
     private Set<WebSocketChannel> connections = new HashSet<>();
 
-    public User(int id, int stacked, String name, String login, Timestamp signup, long cooldownExpiry, List<Role> roles, int pixelCount, int pixelCountAllTime, Long banExpiryTime, boolean shadowBanned, boolean isPermaChatbanned, long chatbanExpiryTime, String chatbanReason, int chatNameColor, Integer displayedFaction, String discordName, Boolean factionBlocked) {
+    public User(int id, int stacked, String name, Timestamp signup, long cooldownExpiry, List<Role> roles, boolean loginWithIP, int pixelCount, int pixelCountAllTime, Long banExpiryTime, boolean shadowBanned, boolean isPermaChatbanned, long chatbanExpiryTime, String chatbanReason, int chatNameColor, Integer displayedFaction, String discordName, Boolean factionBlocked) {
         this.id = id;
         this.stacked = stacked;
         this.name = name;
-        this.login = login;
         this.signup_time = signup;
         this.cooldownExpiry = cooldownExpiry;
         this.roles = roles;
         this.pixelCount = pixelCount;
         this.pixelCountAllTime = pixelCountAllTime;
+        this.loginWithIP = loginWithIP;
         this.banExpiryTime = banExpiryTime;
         this.shadowBanned = shadowBanned;
         this.isPermaChatbanned = isPermaChatbanned;
@@ -72,6 +73,8 @@ public class User {
         this.displayedFaction = displayedFaction;
         this.discordName = discordName;
         this.factionBlocked = factionBlocked;
+
+        this.placementOverrides = new PlacementOverrides(false, false, false);
     }
 
     public void reloadFromDatabase() {
@@ -81,7 +84,6 @@ public class User {
             this.id = user.id;
             this.stacked = user.stacked;
             this.name = user.username;
-            this.login = user.login;
             this.signup_time = user.signup_time;
             this.cooldownExpiry = user.cooldownExpiry;
             this.roles = roles;
@@ -101,11 +103,15 @@ public class User {
         return id;
     }
 
+    public boolean canPlaceColor(int color) {
+        return color >= 0 && (color < App.getPalette().getColors().size() || (color == 0xFF && placementOverrides.getCanPlaceAnyColor()));
+    }
+
     public boolean canPlace() {
         if (isRenameRequested) return false;
 
-        if (hasPermission("board.cooldown.override") && overrideCooldown) return true;
         if (!hasPermission("board.place")) return false;
+        if (placementOverrides.hasIgnoreCooldown()) return true;
         return cooldownExpiry < System.currentTimeMillis();
     }
 
@@ -135,9 +141,13 @@ public class User {
     }
 
     public float getRemainingCooldown() {
-        if (hasPermission("board.cooldown.override") && overrideCooldown) return 0;
+        if (placementOverrides.hasIgnoreCooldown()) return 0;
 
         return Math.max(0, cooldownExpiry - System.currentTimeMillis()) / 1000f;
+    }
+
+    public void setOverrideCaptcha(boolean overrideCaptcha) {
+        this.overrideCaptcha = overrideCaptcha;
     }
 
     public boolean updateCaptchaFlagPrePlace() {
@@ -164,8 +174,28 @@ public class User {
         return flaggedForCaptcha;
     }
 
-    public void setOverrideCooldown(boolean overrideCooldown) {
-        this.overrideCooldown = hasPermission("board.cooldown.override") && overrideCooldown;
+    public void maybeSetIgnoreCooldown(boolean ignoreCooldown) {
+        placementOverrides.setIgnoreCooldown(ignoreCooldown && (hasPermission("board.cooldown.override") || hasPermission("board.cooldown.ignore")));
+    }
+
+    public boolean hasIgnoreCooldown() {
+        return placementOverrides.hasIgnoreCooldown();
+    }
+
+    public void maybeSetCanPlaceAnyColor(boolean canPlaceAnyColor) {
+        placementOverrides.setCanPlaceAnyColor(canPlaceAnyColor && hasPermission("board.palette.all"));
+    }
+
+    public boolean getCanPlaceAnyColor() {
+        return placementOverrides.getCanPlaceAnyColor();
+    }
+
+    public void maybeSetIgnorePlacemap(boolean ignorePlacemap) {
+        placementOverrides.setIgnorePlacemap(ignorePlacemap && hasPermission("board.placemap.ignore"));
+    }
+
+    public boolean hasIgnorePlacemap() {
+        return placementOverrides.hasIgnorePlacemap();
     }
 
     public List<Role> getRoles() {
@@ -198,8 +228,14 @@ public class User {
                 .anyMatch(role -> role.hasPermission(node));
     }
 
-    public String getLogin() {
-        return login;
+    public List<UserLogin> getLogins() {
+        return App.getDatabase().getUserLogins(id).stream()
+            .map((dbLogin) -> UserLogin.fromDB(dbLogin))
+            .collect(Collectors.toList());
+    }
+
+    public boolean loginsWithIP() {
+        return loginWithIP;
     }
 
     private void sendUserData() {
@@ -260,9 +296,12 @@ public class User {
         cooldownExpiry = System.currentTimeMillis() + (seconds * 1000);
     }
 
-    public boolean isOverridingCooldown() {
-        if (hasPermission("board.cooldown.override")) return overrideCooldown;
-        return (overrideCooldown = false);
+    public PlacementOverrides getPlaceOverrides() {
+        return placementOverrides;
+    }
+
+    public boolean isOverridingCaptcha() {
+        return overrideCaptcha;
     }
 
     public void validateCaptcha() {
@@ -297,7 +336,7 @@ public class User {
 
         if (!App.getConfig().getBoolean("oauth.snipMode")) {
             if (this.pixelCountAllTime >= 1000000) {
-                toReturn.add(new Badge("1m+", "1m+ Pixels Placed", "text", null));
+                toReturn.add(new Badge("1M+", "1M+ Pixels Placed", "text", null));
             } else if (this.pixelCountAllTime >= 900000) {
                 toReturn.add(new Badge("900k+", "900k+ Pixels Placed", "text", null));
             } else if (this.pixelCountAllTime >= 800000) {
@@ -344,6 +383,10 @@ public class User {
 
     public Long getBanExpiryTime() {
         return banExpiryTime;
+    }
+
+    public boolean isPermaBanned() {
+        return banExpiryTime == 0;
     }
 
     private void setBanExpiryTime(Integer timeFromNowSeconds) {
@@ -615,16 +658,20 @@ public class User {
         App.getDatabase().setDiscordName(id, discordName);
     }
 
+    public boolean canUseDonatorCharNameColors() {
+        return hasPermission("chat.usercolor.donator") || hasPermission("chat.usercolor.donator.*");
+    }
+
     public boolean hasRainbowChatNameColor() {
         return hasPermission("chat.usercolor.rainbow")
                 && this.chatNameColor == -1;
-        
+
     }
-    
-     public boolean hasDonatorChatNameColor() {
-        return hasPermission("chat.usercolor.donator")
-                && this.chatNameColor == -2;
-        
+
+    public boolean hasDonatorChatNameColor(String name, Integer idx) {
+        return (canUseDonatorCharNameColors() || hasPermission("chat.usercolor.donator." + name))
+                && this.chatNameColor == -idx;
+
     }
 
     public int getChatNameColor() {
@@ -635,17 +682,26 @@ public class User {
         List<String> toReturn = new ArrayList<>();
         if (this.hasRainbowChatNameColor()) {
             toReturn.add("rainbow");
-        }
-        if (this.hasDonatorChatNameColor()) {
+        } else if (this.hasDonatorChatNameColor("green", 2)) {
             toReturn.add("donator");
+            toReturn.add("donator--green");
+        } else if (this.hasDonatorChatNameColor("gray", 3)) {
+            toReturn.add("donator");
+            toReturn.add("donator--gray");
         }
         return toReturn.size() != 0 ? toReturn : null;
     }
 
-    public void setChatNameColor(int colorIndex, boolean callDB) {
+    public void setChatNameColor(int colorIndex, boolean callDB, boolean broadcast) {
         this.chatNameColor = colorIndex;
         if (callDB) {
             App.getDatabase().setChatNameColor(id, colorIndex);
+        }
+        if (broadcast) {
+            App.getServer().broadcast(new ServerChatUserUpdateBuilder(getName())
+                .set("NameColor", colorIndex)
+                .build()
+            );
         }
     }
 
@@ -736,7 +792,10 @@ public class User {
             App.getDatabase().setDisplayedFactionForUID(id, displayedFaction);
         }
         if (broadcast) {
-            App.getServer().broadcast(new ServerChatUserUpdate(getName(), new HashMap<String, Object>() {{put("DisplayedFaction", (displayedFaction == null || displayedFaction == 0) ? "" : fetchDisplayedFaction());}}));
+            App.getServer().broadcast(new ServerChatUserUpdateBuilder(getName())
+                .set("DisplayedFaction", (displayedFaction == null || displayedFaction == 0) ? "" : fetchDisplayedFaction())
+                .build()
+            );
         }
     }
 
@@ -757,6 +816,6 @@ public class User {
 
     public static User fromDBUser(DBUser user) {
         List<Role> roles = App.getDatabase().getUserRoles(user.id);
-        return new User(user.id, user.stacked, user.username, user.login, user.signup_time, user.cooldownExpiry, roles, user.pixelCount, user.pixelCountAllTime, user.banExpiry, user.shadowBanned, user.isPermaChatbanned, user.chatbanExpiry, user.chatbanReason, user.chatNameColor, user.displayedFaction, user.discordName, user.factionBlocked);
+        return new User(user.id, user.stacked, user.username, user.signup_time, user.cooldownExpiry, roles, user.loginWithIP, user.pixelCount, user.pixelCountAllTime, user.banExpiry, user.shadowBanned, user.isPermaChatbanned, user.chatbanExpiry, user.chatbanReason, user.chatNameColor, user.displayedFaction, user.discordName, user.factionBlocked);
     }
 }

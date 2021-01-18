@@ -8,7 +8,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.xnio.XnioWorker;
 import space.pxls.data.DBChatMessage;
-import space.pxls.data.DBPixelPlacement;
+import space.pxls.data.DBPixelPlacementFull;
 import space.pxls.data.DBRollbackPixel;
 import space.pxls.data.Database;
 import space.pxls.server.UndertowServer;
@@ -17,6 +17,7 @@ import space.pxls.server.packets.chat.ClientChatMessage;
 import space.pxls.server.packets.socket.*;
 import space.pxls.user.*;
 import space.pxls.util.*;
+import space.pxls.palette.*;
 
 import java.io.File;
 import java.io.IOException;
@@ -47,7 +48,9 @@ public class App {
     private static byte[] heatmap;
     private static byte[] placemap;
     private static byte[] virginmap;
+    private static byte[] defaultBoard;
     private static boolean havePlacemap;
+    private static Palette palette;
 
     private static PxlsTimer mapSaveTimer;
     private static PxlsTimer mapBackupTimer;
@@ -62,6 +65,7 @@ public class App {
         gson = new Gson();
 
         loadConfig();
+        loadPalette();
 
         // ensure JCS reads our configs
         JCS.getInstance("factions");
@@ -79,7 +83,10 @@ public class App {
         heatmap = new byte[width * height];
         placemap = new byte[width * height];
         virginmap = new byte[width * height];
+        defaultBoard = null;
 
+        initStorage();
+        loadDefaultMap();
         loadMap();
         loadHeatmap();
         havePlacemap = loadPlacemap();
@@ -92,8 +99,13 @@ public class App {
 
         new Thread(() -> {
             Scanner s = new Scanner(System.in);
-            while (true) {
-                handleCommand(s.nextLine());
+            try {
+                while (true) {
+                    handleCommand(s.nextLine());
+                }
+            } catch (NoSuchElementException ex) {
+                // System.in closed, program is shutting down.
+                s.close();
             }
         }).start();
 
@@ -105,6 +117,7 @@ public class App {
         new Timer().schedule(new HeatmapTimer(), 0, heatmap_timer_cd * 1000 / 256);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("Saving map before shutdown...");
             saveMapBackup();
             saveMapForce();
         }));
@@ -149,6 +162,8 @@ public class App {
                     cachedWhoamiOrigin = null;
                     loadConfig();
                     System.out.println("Reloaded configuration");
+                    loadPalette();
+                    System.out.println("Reloaded palette configuration");
                     loadRoles();
                     System.out.println("Reloaded roles configuration");
                     FactionManager.getInstance().invalidateAll();
@@ -167,6 +182,92 @@ public class App {
                 } catch (Exception x) {
                     x.printStackTrace();
                 }
+            } else if (token[0].equalsIgnoreCase("logins") || token[0].equalsIgnoreCase("login")) {
+                if (token.length < 2) {
+                    System.out.println("Usage: logins <username> [{service ID}:{service user ID} ...]");
+                    return;
+                }
+                User user = userManager.getByName(token[1]);
+                if (user == null) {
+                    System.out.println("Cannot find user " + token[1]);
+                    return;
+                }
+                if (token.length < 3) {
+                    var logins = user.getLogins();
+                    if (logins.isEmpty()) {
+                        System.out.println("User " + user.getName() + " has no logins");
+                    } else {
+                        String prettyLogins = logins.stream()
+                            .map(UserLogin::toString)
+                            .collect(Collectors.joining(", "));
+                        System.out.println("User " + user.getName() + " has logins " + prettyLogins);
+                    }
+                    return;
+                }
+                var rest = Arrays.copyOfRange(token, 2, token.length);
+                List<UserLogin> logins = new ArrayList<>();
+                if (!rest[0].equals("-")) {
+                    try {
+                        logins = Arrays.stream(rest)
+                            .distinct()
+                            .map(UserLogin::fromString)
+                            .collect(Collectors.toList());
+                    } catch (IllegalArgumentException ex) {
+                        System.out.println(ex.toString());
+                        return;
+                    }
+                }
+                database.setUserLogins(user.getId(), logins);
+                String prettyLogins = logins.stream()
+                    .map(UserLogin::toString)
+                    .collect(Collectors.joining(", "));
+                String logMessage = "Set " + user.getName() + "'s login methods to " + prettyLogins;
+                if (logins.isEmpty()) {
+                    logMessage = "Removed " + user.getName() + "'s login methods";
+                }
+                database.insertServerAdminLog(logMessage);
+                System.out.println(logMessage);
+            } else if (token[0].equalsIgnoreCase("addlogins") || token[0].equalsIgnoreCase("addlogin")) {
+                if (token.length < 3) {
+                    System.out.println("Usage: addlogins <username> [{service ID}:{service user ID} ...]");
+                    return;
+                }
+                User user = userManager.getByName(token[1]);
+                if (user == null) {
+                    System.out.println("Cannot find user " + token[1]);
+                    return;
+                }
+                var rest = Arrays.copyOfRange(token, 2, token.length);
+                List<UserLogin> addedLogins;
+                try {
+                    addedLogins = Arrays.stream(rest)
+                        .distinct()
+                        .map(UserLogin::fromString)
+                        .collect(Collectors.toList());
+                } catch (IllegalArgumentException ex) {
+                    System.out.println(ex);
+                    return;
+                }
+                String prettyLogins = addedLogins.stream().map(UserLogin::toString).collect(Collectors.joining(", "));
+                database.bulkAddUserLogins(user.getId(), addedLogins);
+                String message = "Added login methods \"" + prettyLogins + "\" to " + user.getName();
+                database.insertServerAdminLog(message);
+                System.out.println(message);
+            } else if (token[0].equalsIgnoreCase("removelogins") || token[0].equalsIgnoreCase("removelogin")) {
+                if (token.length < 3) {
+                    System.out.println("Usage: removelogins <username> [service ID ...]");
+                    return;
+                }
+                User user = userManager.getByName(token[1]);
+                if (user == null) {
+                    System.out.println("Cannot find user " + token[1]);
+                    return;
+                }
+                var rest = Arrays.copyOfRange(token, 2, token.length);
+                database.bulkRemoveUserLoginServices(user.getId(), List.of(rest));
+                String message = "Removed login methods \"" + String.join(", ", rest) + "\" from " + user.getName();
+                database.insertServerAdminLog(message);
+                System.out.println(message);
             } else if (token[0].equalsIgnoreCase("roles") || token[0].equalsIgnoreCase("role")) {
                 if (token.length < 2) {
                     System.out.println("Usage: roles <username> [role ID ...]");
@@ -249,6 +350,7 @@ public class App {
                 String message = String.join(" ", rest);
                 App.getDatabase().insertServerAdminLog(String.format("Sent a server-wide broadcast with the content: %s", message));
                 server.broadcast(new ServerAlert("console", message));
+                System.out.println("Alert sent");
             } else if (token[0].equalsIgnoreCase("ban")) {
                 if (token.length < 2) {
                     System.out.println("Usage: ban <username> [reason]");
@@ -367,18 +469,95 @@ public class App {
                         System.out.printf("Unknown user: %s%n", token[1]);
                     }
                 }
-            } else if (token[0].equalsIgnoreCase("cd-override")) {
-                //cd-override list|USERNAME[ STATE]
+            } else if (token[0].equalsIgnoreCase("placementOverride") || token[0].equalsIgnoreCase("placementOverrides")) {
+                //placementOverride list|USERNAME[ NAME STATE]
+                //NAME=placeanycolor|ignorecooldown|ignoreplacemap
                 //STATE=on|off
+                if (token.length > 1 && !token[1].equalsIgnoreCase("help")) {
+                    if (token[1].equalsIgnoreCase("list")) {
+                        StringBuilder sb = new StringBuilder();
+                        userManager.getAllUsersByToken().forEach((s, user) -> {
+                            PlacementOverrides po = user.getPlaceOverrides();
+                            ArrayList<String> enabledPOs = new ArrayList<String>();
+                            if (po.getCanPlaceAnyColor()) {
+                                enabledPOs.add("placeAnyColor");
+                            }
+                            if (po.hasIgnoreCooldown()) {
+                                enabledPOs.add("ignoreCooldown");
+                            }
+                            if (po.hasIgnorePlacemap()) {
+                                enabledPOs.add("ignorePlacemap");
+                            }
+
+                            if (enabledPOs.size() > 0) {
+                                sb.append("    ").append(user.getName()).append(": ").append(String.join(", ", enabledPOs)).append("\n");
+                            }
+                        });
+
+                        System.out.println(sb.length() > 0 ? sb.toString().trim() : "    <no one has any Placement Overrides enabled>");
+                    } else {
+                        User user = getUserManager().getByName(token[1]);
+                        if (user == null) {
+                            System.out.printf("Unknown user: %s%n", token[1]);
+                        } else {
+                            PlacementOverrides po = user.getPlaceOverrides();
+                            if (token.length >= 4) {
+                                boolean state = token[3].equalsIgnoreCase("on");
+                                if (token[3].equalsIgnoreCase("on")) {
+                                    state = true;
+                                } else if (token[3].equalsIgnoreCase("off")) {
+                                    state = false;
+                                } else {
+                                    System.out.printf("Invalid state: %s%n", token[3]);
+                                    return;
+                                }
+
+                                if (token[2].equalsIgnoreCase("placeAnyColor")) {
+                                    po.setCanPlaceAnyColor(state);
+                                } else if (token[2].equalsIgnoreCase("ignoreCooldown")) {
+                                    po.setIgnoreCooldown(state);
+                                } else if (token[2].equalsIgnoreCase("ignorePlacemap")) {
+                                    po.setIgnorePlacemap(state);
+                                } else {
+                                    System.out.printf("Invalid placement override name: %s%n", token[2]);
+                                    return;
+                                }
+
+                                System.out.printf("Updated %s's %s state to %s%n", user.getName(), token[2].toLowerCase(), state ? "on" : "off");
+                                server.getPacketHandler().sendPlacementOverrides(user);
+                            } else {
+                                System.out.printf(
+                                    "User's Placement Overrides:%n    Ignore cooldown: %s%n    Ignore placemap: %s%n    Place any color: %s%n",
+                                    po.hasIgnoreCooldown() ? "on" : "off",
+                                    po.hasIgnorePlacemap() ? "on" : "off",
+                                    po.getCanPlaceAnyColor() ? "on" : "off"
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    System.out.println("placementOverride list|USERNAME[ NAME STATE]");
+                    System.out.println("NAME=placeAnyColor|ignoreCooldown|ignorePlacemap");
+                    System.out.println("STATE=on|off");
+                }
+            } else if (token[0].equalsIgnoreCase("captchaOverride")) {
+                //captchaOverride list|USERNAME[ STATE]
+                //STATE=on|off
+                if (!isCaptchaConfigured()) {
+                    System.out.println(
+                        "NOTE: captcha is not configured (missing key and/or secret). " +
+                        "Users with captchaOverride on won't receive any captchas."
+                    );
+                }
                 if (token.length > 1) {
                     if (token[1].equalsIgnoreCase("list")) {
                         StringBuilder sb = new StringBuilder();
                         userManager.getAllUsersByToken().forEach((s, user) -> {
-                            if (user.isOverridingCooldown()) sb.append("    ").append(user.getName()).append('\n');
+                            if (user.isOverridingCaptcha()) sb.append("    ").append(user.getName()).append('\n');
                         });
                         System.out.println(sb);
                     } else if (token[1].equalsIgnoreCase("help")) {
-                        System.out.println("cd-override list|USERNAME[ STATE]");
+                        System.out.println("captchaOverride list|USERNAME[ STATE]");
                         System.out.println("STATE=on|off");
                     } else {
                         User user = getUserManager().getByName(token[1]);
@@ -387,18 +566,18 @@ public class App {
                         } else {
                             if (token.length >= 3) {
                                 if (token[2].equalsIgnoreCase("on") || token[2].equalsIgnoreCase("off")) {
-                                    user.setOverrideCooldown(token[2].equalsIgnoreCase("on"));
-                                    System.out.printf("Updated %s's cd-override state to %s%n", user.getName(), token[2].toLowerCase());
+                                    user.setOverrideCaptcha(token[2].equalsIgnoreCase("on"));
+                                    System.out.printf("Updated %s's captchaOverride state to %s%n", user.getName(), token[2].toLowerCase());
                                 } else {
                                     System.out.printf("Invalid state: %s%n", token[2]);
                                 }
                             } else {
-                                System.out.printf("User's CD Override state is: %s%n", user.isOverridingCooldown() ? "on" : "off");
+                                System.out.printf("User's Captcha Override state is: %s%n", user.isOverridingCaptcha() ? "on" : "off");
                             }
                         }
                     }
                 } else {
-                    System.out.println("cd-override list|USERNAME[ STATE]");
+                    System.out.println("captchaOverride list|USERNAME[ STATE]");
                     System.out.println("STATE=on|off");
                 }
             } else if (token[0].equalsIgnoreCase("broadcast")) {
@@ -490,6 +669,7 @@ public class App {
                     if (toFlag != null) {
                         System.out.printf("Flagging %s as %s%n", toFlag.getName(), flagState);
                         toFlag.setRenameRequested(flagState);
+                        App.getDatabase().insertServerAdminLog(String.format("%s %s (%d) for name change", flagState ? "Flagged" : "Unflagged", toFlag.getName(), toFlag.getId()));
                     } else {
                         System.out.println("User doesn't exist");
                     }
@@ -504,6 +684,7 @@ public class App {
                         toRename.setRenameRequested(false);
                         if (toRename.updateUsername(token[2], true)) {
                             App.getServer().send(toRename, new ServerRenameSuccess(toRename.getName()));
+                            App.getDatabase().insertServerAdminLog(String.format("Changed %s's name to %s (uid: %d)", token[1], token[2], toRename.getId()));
                             System.out.println("Name updated");
                         } else {
                             System.out.println("Failed to update name (function returned false. name taken or an error occurred)");
@@ -551,7 +732,22 @@ public class App {
                     System.out.printf("%s raw_packet%n", token[0]);
                     return;
                 }
-                App.getServer().broadcastRaw(line.substring(token[0].length() + 1).trim());
+                String raw = line.substring(token[0].length() + 1);
+                App.getServer().broadcastRaw(raw);
+                System.out.println("Packet broadcast sent.");
+            } else if (token[0].equalsIgnoreCase("up")) {
+                if (token.length < 3) {
+                    System.out.printf("%s username raw_packet%n", token[0]);
+                    return;
+                }
+                User user = userManager.getByName(token[1]);
+                if (user == null) {
+                    System.out.println("User doesn't exist");
+                    return;
+                }
+                String raw = line.substring(token[0].length() + token[1].length() + 2);
+                App.getServer().sendRaw(user, raw);
+                System.out.println(String.format("Packet sent to %s (UID %d)'s connections (#%d).", user.getName(), user.getId(), user.getConnections().size()));
             } else if (token[0].equalsIgnoreCase("f")) {
                 // f $FID [$ACTION[ $VALUE]]
                 String subcommand;
@@ -702,6 +898,49 @@ public class App {
             role.setInherits(inherits);
         });
     }
+    public static void loadPalette() {
+        // NOTE: This differs from the way pxls.conf is handled, as we don't merge the palette-reference.conf
+        // file into roles.conf, but use it as a default in case palette.conf doesn't exist or is invalid.
+        var paletteConfigFile = new File("palette.conf");
+        var paletteConfig = ConfigFactory.parseFile(paletteConfigFile.exists() ? paletteConfigFile : new File("resources/palette-reference.conf"));
+
+        ArrayList<Color> colors = new ArrayList<Color>();
+        int defaultIdx = -1;
+        for (ConfigValue colorConfig : paletteConfig.getList("colors")) {
+            Map<String, Object> color = (Map<String, Object>) colorConfig.unwrapped();
+            colors.add(new Color((String) color.get("name"), (String) color.get("value")));
+        }
+
+        if (paletteConfig.hasPath("backgroundColor")) {
+            var backgroundColor = paletteConfig.getAnyRef("backgroundColor");
+            if (backgroundColor instanceof Integer) {
+                defaultIdx = (int) backgroundColor;
+                if (defaultIdx < 0 || defaultIdx >= colors.size()) {
+                    defaultIdx = -1;
+                    getLogger().warn("Background color index {} is out of bounds", backgroundColor);
+                }
+            } else if (backgroundColor instanceof String) {
+                for (int i = 0; i < colors.size(); i++) {
+                    if (colors.get(i).getName().equalsIgnoreCase((String) backgroundColor)) {
+                        defaultIdx = i;
+                        break;
+                    }
+                }
+
+                if (defaultIdx == -1) {
+                    getLogger().warn("Background color \"{}\" not found", backgroundColor);
+                }
+            }
+        }
+
+        if (defaultIdx == -1) {
+            defaultIdx = 0;
+            Color first = colors.get(defaultIdx);
+            getLogger().warn("Defaulting background color to the first color: \"{}\" (#{})", first.getName(), first.getValue());
+        }
+
+        palette = new Palette(colors, (byte) defaultIdx);
+    }
 
     public static int getStackMultiplier() {
         return stackMultiplier;
@@ -748,6 +987,10 @@ public class App {
         return board;
     }
 
+    public static byte[] getDefaultBoardData() {
+        return defaultBoard;
+    }
+
     public static boolean getHavePlacemap() {
         return havePlacemap;
     }
@@ -756,11 +999,11 @@ public class App {
         return Paths.get(config.getString("server.storage"));
     }
 
-    public static List<String> getPalette() {
-        return config.getStringList("board.palette");
+    public static boolean isCaptchaEnabled() {
+        return config.getBoolean("captcha.enabled");
     }
 
-    public static boolean isCaptchaEnabled() {
+    public static boolean isCaptchaConfigured() {
         return !config.getString("captcha.key").isEmpty() && !config.getString("captcha.secret").isEmpty();
     }
 
@@ -786,7 +1029,7 @@ public class App {
     }
 
     public static void putPixel(int x, int y, int color, User user, boolean mod_action, String ip, boolean updateDatabase, String action) {
-        if (x < 0 || x >= width || y < 0 || y >= height || (color >= getPalette().size() && !(color == 0xFF || color == -1))) return;
+        if (x < 0 || x >= width || y < 0 || y >= height || (color >= getPalette().getColors().size() && !(color == 0xFF || color == -1))) return;
         String userName = user != null ? user.getName() : "<server>";
 
         if (action.trim().isEmpty()) {
@@ -831,7 +1074,7 @@ public class App {
                 forBroadcast.add(new ServerPlace.Pixel(rbPixel.toPixel.x, rbPixel.toPixel.y, rbPixel.toPixel.color));
                 database.putRollbackPixel(who, rbPixel.fromId, rbPixel.toPixel.id);
             } else { //else rollback to blank canvas
-                DBPixelPlacement fromPixel = database.getPixelByID(null, rbPixel.fromId);
+                DBPixelPlacementFull fromPixel = database.getPixelByID(null, rbPixel.fromId);
                 byte rollbackDefault = getDefaultColor(fromPixel.x, fromPixel.y);
                 putPixel(fromPixel.x, fromPixel.y, rollbackDefault, who, false, "", false, "rollback");
                 forBroadcast.add(new ServerPlace.Pixel(fromPixel.x, fromPixel.y, (int) rollbackDefault));
@@ -848,9 +1091,9 @@ public class App {
     }
 
     private static void undoRollback_(User who) {
-        List<DBPixelPlacement> pixels = database.getUndoPixels(who); //get all pixels that can and need to be undone
+        List<DBPixelPlacementFull> pixels = database.getUndoPixels(who); //get all pixels that can and need to be undone
         List<ServerPlace.Pixel> forBroadcast = new ArrayList<>();
-        for (DBPixelPlacement fromPixel : pixels) {
+        for (DBPixelPlacementFull fromPixel : pixels) {
             //restores original pixel
             putPixel(fromPixel.x, fromPixel.y, fromPixel.color, who, false, "", false, "rollback undo"); //in board[]
             forBroadcast.add(new ServerPlace.Pixel(fromPixel.x, fromPixel.y, fromPixel.color)); //in websocket
@@ -886,6 +1129,31 @@ public class App {
             }
         }
         server.broadcastNoShadow(new ServerPlace(forBroadcast));
+    }
+
+    private static boolean initStorage() {
+        return new File(getStorageDir().toString()).mkdirs();
+    }
+
+    private static boolean loadDefaultMap() {
+        Path path = getStorageDir().resolve("default_board.dat").toAbsolutePath();
+        if (!Files.exists(path)) {
+            defaultBoard = null;
+            return false;
+        }
+
+        try {
+            byte[] bytes = Files.readAllBytes(path);
+            defaultBoard = new byte[width * height];
+            System.arraycopy(bytes, 0, defaultBoard, 0, width * height);
+            return true;
+        } catch (ArrayIndexOutOfBoundsException e) {
+            getLogger().error("board.dat dimensions don't match the ones on pxls.conf");
+            return false;
+        } catch (IOException e) {
+            e.printStackTrace();
+            return false;
+        }
     }
 
     private static boolean loadMap() {
@@ -938,7 +1206,7 @@ public class App {
     private static boolean loadPlacemap() {
         Path path = getStorageDir().resolve("placemap.dat");
         if (!Files.exists(path)) {
-            getLogger().warn("Cannot find placemap.dat in working directory, using blank placemap");
+            getLogger().warn("Cannot find placemap.dat in working directory, assuming transparent pixels are unplaceable");
             return false;
         }
 
@@ -1068,19 +1336,9 @@ public class App {
     }
 
     public static byte getDefaultColor(int x, int y) {
-        Path path = getStorageDir().resolve("default_board.dat").toAbsolutePath();
-        if (Files.exists(path)) {
-            try {
-                RandomAccessFile raf = new RandomAccessFile(path.toString(), "r");
-                raf.seek(x + y * width);
-                byte b = raf.readByte();
-                raf.close();
-                return b;
-            } catch (NoSuchFileException e) {
-            } catch (IOException e) {
-            }
-        }
-        return (byte) config.getInt("board.defaultColor");
+        return App.defaultBoard != null
+            ? App.defaultBoard[x + y * App.width]
+            : palette.getDefaultColorIndex();
     }
 
     public static Database getDatabase() {
@@ -1089,6 +1347,10 @@ public class App {
 
     public static UndertowServer getServer() {
         return server;
+    }
+
+    public static Palette getPalette() {
+        return palette;
     }
 
     public static long getUserIdleTimeout() {

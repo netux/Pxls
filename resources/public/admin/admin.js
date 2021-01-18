@@ -186,7 +186,10 @@
             target: '_blank'
           }, data.username)],
           ['Profile', crel('a', { href: `/profile/${data.username}`, target: '_blank' }, data.username)],
-          ['Login', data.login],
+          ['Logins', data.logins
+            ? data.logins.map(({ serviceID, serviceUserID }) => `${serviceID}:${serviceUserID}`).join(', ')
+            : null
+          ],
           ['Roles', data.roles.map(role => role.name).join(', ')],
           ['Pixels', data.pixelCount],
           ['All Time Pixels', data.pixelCountAllTime],
@@ -208,10 +211,14 @@
         }
         self.elements.check.empty().append(
           $('<div>').addClass('content').append(
-            $.map(items, function (o) {
+            $.map(items, function ([name, value]) {
+              if (value == null) {
+                return null;
+              }
+
               return $('<div>').append(
-                $('<b>').text(o[0] + ': '),
-                typeof o[1] === 'string' ? $('<span>').text(o[1]) : o[1]
+                $('<b>').text(name + ': '),
+                typeof value === 'string' ? $('<span>').text(value) : value
               );
             }),
             (admin.user.hasPermission('user.alert') ? $('<div>').append(sendAlert(data.username)) : ''),
@@ -356,17 +363,33 @@
             $.map(
               [
                 {
-                  text: 'Override cooldown',
+                  text: 'Ignore cooldown',
                   onChange: function () {
-                    admin.socket.send({ type: 'admin_cdoverride', override: this.checked });
+                    admin.socket.send({ type: 'admin_placement_overrides', ignoreCooldown: this.checked });
                   },
-                  checkState: admin.cdOverride,
-                  disabled: !admin.user.hasPermission('board.cooldown.override')
+                  checkState: admin.user.placementOverrides.ignoreCooldown,
+                  disabled: !(admin.user.hasPermission('board.cooldown.override') || admin.user.hasPermission('board.cooldown.ignore'))
+                },
+                {
+                  text: 'Place any color',
+                  onChange: function () {
+                    admin.socket.send({ type: 'admin_placement_overrides', canPlaceAnyColor: this.checked });
+                  },
+                  checkState: admin.user.placementOverrides.canPlaceAnyColor,
+                  disabled: !admin.user.hasPermission('board.palette.all')
+                },
+                {
+                  text: 'Ignore placemap',
+                  onChange: function () {
+                    admin.socket.send({ type: 'admin_placement_overrides', ignorePlacemap: this.checked });
+                  },
+                  checkState: admin.user.placementOverrides.ignorePlacemap,
+                  disabled: !admin.user.hasPermission('board.placemap.ignore')
                 }
               ],
               function (cbox) {
-                return $('<label>').text(cbox.text).append(
-                  $('<input>').attr('type', 'checkbox').prop('checked', !!cbox.checkState).prop('disabled', !!cbox.disabled).change(cbox.onChange)
+                return $('<label>').append(
+                  $('<input>').attr('type', 'checkbox').prop('checked', !!cbox.checkState).prop('disabled', !!cbox.disabled).change(cbox.onChange), $('<span class="label-text">').text(cbox.text)
                 );
               }
             ),
@@ -409,21 +432,31 @@
        */
       init: function () {
         App.lookup.replaceHook('username', {
-          get: data => crel('span', crel('a', {
-            href: `https://admin.${location.host}/userinfo/${data.username}`,
-            target: '_blank'
-          }, data.username), ' (', crel('a', {
-            href: `/profile/${data.username}`,
-            target: '_blank'
-          }, 'profile'), ')')
+          get: data => data.username
+            ? crel('span', crel('a', {
+              href: `https://admin.${location.host}/userinfo/${data.username}`,
+              target: '_blank'
+            }, data.username), ' (', crel('a', {
+              href: `/profile/${data.username}`,
+              target: '_blank'
+            }, 'profile'), ')')
+            : null
         });
         App.lookup.registerHook({
-          id: 'login',
-          name: 'Login',
+          id: 'logins',
+          name: 'Logins',
           sensitive: true,
           get: data => {
             const addMonoClass = localStorage.getItem('monospace_lookup') === 'true' ? ' useMono' : '';
-            return $('<div class="monoVal' + addMonoClass + '">').text(data.login);
+            const elems = $('<div>');
+            for (let i = 0; i < data.logins.length; i++) {
+              const login = data.logins[i];
+              elems.append($('<span class="monoVal' + addMonoClass + '">').text(`${login.serviceID}:${login.serviceUserID}`));
+              if (i !== data.logins.length - 1) {
+                elems.append(', ');
+              }
+            }
+            return elems;
           }
         }, {
           id: 'user_agent',
